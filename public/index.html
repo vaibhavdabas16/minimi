@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>minimi chat</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <header>
+      <div class="brand">minimi <span>chat</span></div>
+      <button id="clear" class="ghost" title="Forget every conversation">Clear memory</button>
+    </header>
+    <main id="log" aria-live="polite">
+      <div id="empty" class="empty" hidden>
+        <h1>Ask anything.</h1>
+        <p>I search the web when facts might have changed, and I remember what you asked and when — so you can come back later and ask “is that still true?”</p>
+      </div>
+    </main>
+    <form id="composer">
+      <textarea id="input" rows="1" placeholder="Message minimi…" autocomplete="off" autofocus></textarea>
+      <button id="send" type="submit" aria-label="Send">↑</button>
+    </form>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
