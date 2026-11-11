@@ -15,6 +15,9 @@ if (process.env.AGENT_NOW && Number.isNaN(fakeStart)) {
 
 export const config = {
   model: process.env.MODEL || "claude-opus-5-5",
+  /** Small fast model for background memory enrichment (claims + profile). */
+  enrichModel: process.env.ENRICH_MODEL || "claude-haiku-5-5",
+  enrich: process.env.ENRICH !== "off",
   effort: effort(process.env.EFFORT),
   port: Number(process.env.PORT) || 3000,
   dataDir: path.resolve(process.env.DATA_DIR || "./data"),

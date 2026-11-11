@@ -10,6 +10,7 @@ import { safeTimeZone } from "./time.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const store = new Store(config.dataDir);
+const ENRICH_WAIT_MS = 4000;
 
 /** One turn at a time per user, so each turn sees the previous one in memory. */
 const userQueues = new Map<string, Promise<unknown>>();
@@ -89,13 +90,25 @@ const server = http.createServer(async (req, res) => {
         if (!res.writableEnded) res.write(`data: ${JSON.stringify(e)}\n\n`);
       };
 
-      await serialize(userId, () =>
-        runTurn({ timeline: store.for(userId), message, tz, emit, signal: abort.signal }).catch((err) => {
+      await serialize(userId, async () => {
+        try {
+          const { enrichment } = await runTurn({
+            timeline: store.for(userId),
+            message,
+            tz,
+            emit,
+            signal: abort.signal,
+          });
+          // The answer is already on screen. Give background enrichment a short
+          // window so the *next* turn sees this one's claims, but never let it
+          // hold the queue for long.
+          await Promise.race([enrichment, new Promise((r) => setTimeout(r, ENRICH_WAIT_MS))]);
+        } catch (err) {
           if (abort.signal.aborted) return; // user navigated away; nothing to report
           console.error(err);
           emit({ type: "error", message: describeError(err) });
-        }),
-      );
+        }
+      });
       res.end();
       return;
     }

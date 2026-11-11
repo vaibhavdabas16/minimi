@@ -1,6 +1,7 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { randomUUID } from "node:crypto";
 import { config, now as clockNow } from "./config.js";
+import { enrich } from "./enrich.js";
 import { buildTurnContext, type Recalled } from "./memory.js";
 import { SYSTEM_PROMPT } from "./prompt.js";
 import type { Exchange, Source, Timeline } from "./store.js";
@@ -14,6 +15,7 @@ export type AgentEvent =
   | { type: "text"; delta: string }
   | { type: "cite"; refs: Array<{ n: number; url: string; title: string }> }
   | { type: "done"; exchange: Exchange }
+  | { type: "memory"; claims: number; profile: string[] }
   | { type: "error"; message: string };
 
 let client: Anthropic | null = null;
@@ -21,22 +23,27 @@ let client: Anthropic | null = null;
 const anthropic = () => (client ??= new Anthropic());
 const MAX_CONTINUATIONS = 3;
 
-/** Ask a question; stream events; persist the exchange to the user's timeline. */
+/**
+ * Ask a question; stream events; persist the exchange to the user's timeline.
+ * Resolves once the answer is saved; `enrichment` settles later, when the
+ * background claim/profile extraction has been written to memory.
+ */
 export async function runTurn(opts: {
   timeline: Timeline;
   message: string;
   tz: string;
   emit: (e: AgentEvent) => void;
   signal: AbortSignal;
-}): Promise<void> {
+  now?: Date; // injectable clock (evals); defaults to the app clock
+}): Promise<{ exchange: Exchange; enrichment: Promise<void> }> {
   const { timeline, message, tz, emit, signal } = opts;
   const startedAt = Date.now();
-  const askedAt = clockNow();
+  const askedAt = opts.now ?? clockNow();
 
   const ctx = buildTurnContext(timeline, message, askedAt, tz);
   emit({ type: "context", dateRefs: ctx.dateRefs, recalled: ctx.recalled });
 
-  // Cache breakpoints: (1) end of system = instructions + timeline index,
+  // Cache breakpoints: (1) end of system = instructions + profile + timeline index,
   // (2) end of the recent-history window. Both are stable between turns, so a
   // follow-up only pays full price for the new context and question.
   const history = ctx.history.map((m) => ({ ...m }));
@@ -81,6 +88,7 @@ export async function runTurn(opts: {
         max_tokens: config.maxOutputTokens,
         system: [
           { type: "text", text: SYSTEM_PROMPT },
+          { type: "text", text: ctx.profileBlock },
           { type: "text", text: ctx.timelineBlock, cache_control: { type: "ephemeral" } },
         ],
         messages,
@@ -161,6 +169,17 @@ export async function runTurn(opts: {
   };
   timeline.append(exchange);
   emit({ type: "done", exchange });
+
+  const enrichment = config.enrich && exchange.answer
+    ? enrich(exchange, timeline.profile)
+        .then(({ claims, profile }) => {
+          timeline.attachClaims(exchange.id, claims);
+          timeline.setProfile(profile);
+          emit({ type: "memory", claims: claims.length, profile: timeline.profile });
+        })
+        .catch((err) => console.warn("memory enrichment failed:", describeError(err)))
+    : Promise.resolve();
+  return { exchange, enrichment };
 }
 
 /** Map SDK errors to something a person can act on. */

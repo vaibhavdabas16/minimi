@@ -42,13 +42,16 @@ export class Bm25Index {
   private k1 = 1.2;
   private b = 0.75;
 
+  /** Index `text` under `id`; calling again for the same id adds to that document. */
   add(id: number, text: string) {
-    const tf = new Map<string, number>();
+    const tf = this.docs.get(id) ?? new Map<string, number>();
     const toks = tokenize(text);
-    for (const t of toks) tf.set(t, (tf.get(t) ?? 0) + 1);
-    for (const t of tf.keys()) this.df.set(t, (this.df.get(t) ?? 0) + 1);
+    for (const t of toks) {
+      if (!tf.has(t)) this.df.set(t, (this.df.get(t) ?? 0) + 1);
+      tf.set(t, (tf.get(t) ?? 0) + 1);
+    }
     this.docs.set(id, tf);
-    this.lengths.set(id, toks.length);
+    this.lengths.set(id, (this.lengths.get(id) ?? 0) + toks.length);
     this.totalLen += toks.length;
   }
 

@@ -43,13 +43,39 @@ const reply = sse([
   { type: "message_stop" },
 ]);
 
+const enrichmentReply = {
+  id: "msg_2",
+  type: "message",
+  role: "assistant",
+  model: "claude-haiku-5-5",
+  stop_reason: "end_turn",
+  stop_sequence: null,
+  usage: { input_tokens: 10, output_tokens: 10 },
+  content: [
+    {
+      type: "text",
+      text: JSON.stringify({
+        claims: [{ entity: "Neon", attribute: "Launch plan price", value: "$19/month", asOf: null, source: 1 }],
+        profile: ["Choosing Postgres hosting for their product"],
+      }),
+    },
+  ],
+};
+
 before(async () => {
   server = http.createServer(async (req, res) => {
     let body = "";
     for await (const c of req) body += c;
-    requests.push({ url: req.url, headers: req.headers, body: JSON.parse(body) });
-    res.writeHead(200, { "content-type": "text/event-stream" });
-    res.end(reply);
+    const parsed = JSON.parse(body);
+    requests.push({ url: req.url, headers: req.headers, body: parsed });
+    if (parsed.stream) {
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      res.end(reply);
+      return;
+    }
+    // Non-streaming call = background enrichment (structured output)
+    res.writeHead(200, { "content-type": "application/json" });
+    res.end(JSON.stringify(enrichmentReply));
   });
   await new Promise<void>((r) => server.listen(0, r));
   process.env.ANTHROPIC_BASE_URL = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
@@ -73,7 +99,7 @@ test("a turn searches, streams a cited answer, and is remembered with its time",
   });
 
   const events: AgentEvent[] = [];
-  await runTurn({
+  const { enrichment } = await runTurn({
     timeline,
     message: "On 3 November I asked about Postgres hosting. Has the price changed since?",
     tz: "Asia/Kolkata",
@@ -82,10 +108,10 @@ test("a turn searches, streams a cited answer, and is remembered with its time",
   });
 
   // --- what we sent
-  const sent = requests.at(-1).body;
+  const sent = requests.find((r) => r.body.stream).body;
   assert.equal(sent.tools[0].type, "web_search_20260209");
   assert.equal(sent.tools.length, 1, "exactly one tool: web search");
-  assert.deepEqual(sent.system[1].cache_control, { type: "ephemeral" });
+  assert.deepEqual(sent.system.at(-1).cache_control, { type: "ephemeral" });
   const lastHistory = sent.messages.at(-2);
   assert.equal(lastHistory.role, "assistant");
   assert.deepEqual(lastHistory.content[0].cache_control, { type: "ephemeral" });
@@ -106,5 +132,20 @@ test("a turn searches, streams a cited answer, and is remembered with its time",
   assert.deepEqual(saved.sources, [{ url: URL_, title: "Neon pricing" }]);
   assert.deepEqual(saved.searches, ["Neon pricing November 2026"]);
   assert.ok(Date.parse(saved.askedAt) > Date.parse("2026-01-01"));
-  assert.equal(fs.readFileSync(path.join(dir, "u.jsonl"), "utf8").trim().split("\n").length, 2);
+
+  // --- background enrichment: claims attached to the exchange, profile learned
+  await enrichment;
+  const enrichReq = requests.find((r) => !r.body.stream).body;
+  assert.equal(enrichReq.model, "claude-haiku-5-5");
+  assert.equal(enrichReq.output_config.format.type, "json_schema");
+  assert.equal(events.at(-1)!.type, "memory");
+  assert.deepEqual(saved.claims?.[0].value, "$19/month");
+  assert.deepEqual(timeline.profile, ["Choosing Postgres hosting for their product"]);
+
+  // all of it survives a restart: exchange + claims record + profile record
+  const reloaded = new Timeline(path.join(dir, "u.jsonl"));
+  assert.equal(reloaded.exchanges.length, 2);
+  assert.equal(reloaded.exchanges[1].claims?.[0].entity, "Neon");
+  assert.deepEqual(reloaded.profile, timeline.profile);
+  assert.equal(reloaded.index.search("Launch plan", 1)[0].id, 1);
 });

@@ -11,12 +11,14 @@ import { daysAgo, formatDateTime, formatDay } from "./time.js";
  * a full model round-trip before the agent could even start answering. Instead,
  * every turn is assembled deterministically from three layers:
  *
+ *   0. Profile          — durable facts about the user, extracted in the
+ *                         background after each turn (enrich.ts). Cached.
  *   1. Timeline index   — every older question, one line each, with its date.
  *                         Lives in the system prompt and only changes every
  *                         `historyStep` turns, so it stays prompt-cached.
  *   2. Recent window    — the last 6–12 exchanges as real user/assistant turns,
  *                         each user turn stamped with when it was asked.
- *   3. Recalled detail  — full Q+A+sources for older exchanges that match a date
+ *   3. Recalled detail  — full Q+A+sources+claims for older exchanges that match a date
  *                         the user mentioned ("on 3 November", "last Tuesday")
  *                         or the topic (BM25 over past exchanges).
  *
@@ -32,7 +34,8 @@ export interface Recalled {
 }
 
 export interface TurnContext {
-  timelineBlock: string; // system block 2 (cached)
+  profileBlock: string; // system block 2
+  timelineBlock: string; // system block 3 (cached)
   history: Anthropic.Beta.BetaMessageParam[]; // recent window (cached prefix)
   preamble: string; // volatile per-turn context, sent with the user message
   dateRefs: Array<{ phrase: string; label: string; matches: number }>;
@@ -63,9 +66,21 @@ function sourcesList(e: Exchange, max = 8): string {
     .join("\n");
 }
 
+function claimsList(e: Exchange): string {
+  return (e.claims ?? [])
+    .map(
+      (c) =>
+        `- ${c.entity} · ${c.attribute}: ${c.value}${c.source ? ` [${c.source}]` : ""}${
+          c.asOf ? ` (dated ${c.asOf})` : ""
+        }`,
+    )
+    .join("\n");
+}
+
 function renderAnswerForHistory(e: Exchange): string {
   const parts = [e.answer.trim() || "(no answer recorded)"];
   if (e.sources.length) parts.push(`Sources:\n${sourcesList(e)}`);
+  if (e.claims?.length) parts.push(`Claims this answer made:\n${claimsList(e)}`);
   if (e.searches.length) parts.push(`(Searched: ${e.searches.map((q) => `"${q}"`).join(", ")})`);
   return parts.join("\n\n");
 }
@@ -169,13 +184,21 @@ export function buildTurnContext(
         `<question>${e.question}</question>`,
         `<answer>${oneLineKeepBreaks(e.answer, ANSWER_CHARS_RECALLED)}</answer>`,
         e.sources.length ? `<sources>\n${sourcesList(e)}\n</sources>` : "",
+        e.claims?.length ? `<claims>\n${claimsList(e)}\n</claims>` : "",
         "</exchange>",
       );
     }
     lines.push("</recalled_exchanges>");
   }
 
+  const profileBlock = timeline.profile.length
+    ? `<user_profile note="Durable facts about this user, learned from earlier conversations.">\n${timeline.profile
+        .map((f) => `- ${f}`)
+        .join("\n")}\n</user_profile>`
+    : "<user_profile>Nothing known yet.</user_profile>";
+
   return {
+    profileBlock,
     timelineBlock,
     history,
     preamble: `<context>\n${lines.filter((l) => l !== "").join("\n")}\n</context>`,

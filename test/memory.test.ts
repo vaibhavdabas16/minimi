@@ -76,3 +76,16 @@ test("timeline survives a restart (JSONL on disk)", () => {
   assert.equal(b.exchanges.length, 1);
   assert.equal(b.index.search("postgres", 3)[0].id, 0);
 });
+
+test("claims and profile are rendered into context", () => {
+  const t = seeded();
+  const crm = t.exchanges.findIndex((e) => e.question.includes("CRM"));
+  t.attachClaims(t.exchanges[crm].id, [
+    { entity: "Pipedrive", attribute: "Growth plan price", value: "$39/user/month", asOf: "2026-11-09", source: 1 },
+  ]);
+  t.setProfile(["Runs a 20-person sales team"]);
+  const ctx = buildTurnContext(t, "Has Pipedrive pricing changed since?", NOW, TZ);
+  assert.match(ctx.profileBlock, /Runs a 20-person sales team/);
+  assert.ok(ctx.recalled.some((r) => r.question.includes("CRM")), "found via the claim's entity");
+  assert.match(ctx.preamble, /Pipedrive · Growth plan price: \$39\/user\/month \[1\] \(dated 2026-11-09\)/);
+});

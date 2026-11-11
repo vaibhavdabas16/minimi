@@ -144,6 +144,16 @@ async function ask(message) {
       if (nearBottom) scrollDown();
     });
   };
+  let finished = false;
+  const finish = () => {
+    if (finished) return;
+    finished = true;
+    status.remove();
+    h.a.classList.remove("cursor");
+    busy = false;
+    send.disabled = !input.value.trim();
+    input.focus();
+  };
   const setStatus = (s) => {
     status.textContent = s;
     status.hidden = !s;
@@ -184,6 +194,10 @@ async function ask(message) {
         h.a.innerHTML = renderMarkdown(text, ev.exchange.sources);
         renderSources(h.src, ev.exchange.sources);
         renderMeta(h.meta, ev.exchange);
+        finish(); // the answer is complete; memory enrichment may still arrive
+        break;
+      case "memory":
+        if (ev.claims) h.trace.append(el("span", "chip", `Remembered ${ev.claims} fact${ev.claims > 1 ? "s" : ""} to re-check later`));
         break;
       case "error":
         h.a.classList.add("error");
@@ -220,11 +234,7 @@ async function ask(message) {
   } catch (e) {
     handle({ type: "error", message: `Connection lost: ${e.message}` });
   } finally {
-    status.remove();
-    h.a.classList.remove("cursor");
-    busy = false;
-    send.disabled = !input.value.trim();
-    input.focus();
+    finish();
   }
 }
 
